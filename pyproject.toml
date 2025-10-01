@@ -1,0 +1,25 @@
+[project]
+name = "eliteagent"
+version = "0.1.0"
+description = "Terminal AI coding agent built with pydantic-ai, rich, and prompt-toolkit"
+authors = [
+  { name = "AI", email = "ai.agent@example.com" }
+]
+requires-python = ">=3.10"
+readme = "README.md"
+license = { text = "MIT" }
+
+dependencies = [
+  "pydantic-ai>=0.7.0",
+  "rich>=13.7.1",
+  "prompt-toolkit>=3.0.47",
+  "python-dotenv>=1.0.1",
+]
+
+[project.scripts]
+eliteagent = "eliteagent.cli:main"
+
+[dependency-groups]
+dev = [
+  "ruff>=0.6.8",
+]

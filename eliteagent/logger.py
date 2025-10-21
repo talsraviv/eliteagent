@@ -88,12 +88,12 @@ class SessionLogger:
     ) -> None:
         """Log all LLM request/response pairs from a conversation turn.
         
-        Parses through the message history and logs each LLM call separately,
-        including the initial user prompt and subsequent tool use rounds.
+        Builds the FULL conversation context for each LLM call, exactly as
+        it's sent to the API. This includes the complete message history.
         """
-        # Build the conversation by grouping request/response pairs
+        # Process messages and log each request/response pair
         i = 0
-        request_messages = []
+        conversation_history = []
         
         while i < len(messages):
             msg = messages[i]
@@ -106,31 +106,41 @@ class SessionLogger:
             kind = msg_dict.get('kind')
             
             if kind == 'request':
-                # Start building a request
+                # Build the full request with conversation history
                 parts = msg_dict.get('parts', [])
                 
-                # Check if this is the initial request with system prompt
+                # Check if this includes system prompt (first request)
                 has_system = any(p.get('part_kind') == 'system-prompt' for p in parts)
                 
-                # Build messages array for this request
+                # Build the complete messages array for this API call
                 current_request = []
                 
                 if has_system:
-                    # Add system prompt
-                    current_request.append({
+                    # First request: add system prompt and save to history
+                    system_msg = {
                         "role": "system",
                         "content": system_prompt
-                    })
+                    }
+                    current_request.append(system_msg)
+                    conversation_history.append(system_msg)
+                else:
+                    # Subsequent requests: include full history
+                    current_request.extend(conversation_history)
                 
-                # Add all request parts
+                # Add the new parts from this request
                 for part in parts:
                     part_kind = part.get('part_kind')
                     if part_kind == 'user-prompt':
-                        current_request.append({
+                        msg_obj = {
                             "role": "user",
                             "content": part.get('content', '')
-                        })
+                        }
+                        current_request.append(msg_obj)
+                        # Add to history for next round (only on first request)
+                        if has_system:
+                            conversation_history.append(msg_obj)
                     elif part_kind == 'tool-return':
+                        # Tool returns come after we've already added assistant message
                         current_request.append({
                             "role": "tool",
                             "tool_call_id": part.get('tool_call_id'),
@@ -149,6 +159,33 @@ class SessionLogger:
                                 response_dict=next_dict,
                                 model_name=model_name
                             )
+                            
+                            # Add the assistant response to conversation history
+                            content_parts = []
+                            tool_calls = []
+                            
+                            for part in next_dict.get('parts', []):
+                                part_kind = part.get('part_kind')
+                                if part_kind == 'text':
+                                    content_parts.append(part.get('content', ''))
+                                elif part_kind == 'tool-call':
+                                    tool_calls.append({
+                                        "id": part.get('tool_call_id'),
+                                        "type": "function",
+                                        "function": {
+                                            "name": part.get('tool_name'),
+                                            "arguments": part.get('args', {})
+                                        }
+                                    })
+                            
+                            assistant_msg = {"role": "assistant"}
+                            if content_parts:
+                                assistant_msg["content"] = "\n".join(content_parts)
+                            if tool_calls:
+                                assistant_msg["tool_calls"] = tool_calls
+                            
+                            conversation_history.append(assistant_msg)
+                            
                             i += 2  # Skip both request and response
                             continue
                 

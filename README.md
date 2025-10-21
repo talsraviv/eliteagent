@@ -56,27 +56,29 @@ OPENROUTER_API_KEY=...
 
 ## Session Logging
 
-Every session creates a numbered directory (`session_001/`, `session_002/`, etc.) containing transparent logs of all interactions:
+Every session creates a numbered directory (`session_001/`, `session_002/`, etc.) containing pure, unadulterated logs of all interactions:
 
-- **User inputs**: Captured exactly as entered
-- **LLM calls**: Full requests (prompt, history, system prompt) and responses (all messages, text output)
-- **Tool executions**: Commands and their output/errors
+- **User inputs**: Raw text (`.txt`)
+- **LLM requests**: OpenAI-style JSON payloads (`.json`)
+- **LLM responses**: OpenAI-style JSON responses with usage stats (`.json`)
+- **Tool requests**: Raw commands (`.txt`) or JSON for non-shell tools
+- **Tool responses**: Raw stdout/stderr (`.txt`)
 
 Each interaction is stored in chronologically numbered subdirectories:
 ```
 session_001/
 ├── 001-user/
-│   └── 001-request.md
+│   └── 001-request.txt
 ├── 002-llm/
-│   ├── 002-request.md
-│   └── 003-response.md
+│   ├── 002-request.json
+│   └── 003-response.json
 ├── 003-tool/
-│   ├── 003-request.md
-│   └── 004-response.md
+│   ├── 003-request.txt
+│   └── 004-response.txt
 └── ...
 ```
 
-All logs are formatted as readable markdown with raw data in code blocks. Perfect for:
+All files use proper extensions for syntax highlighting in your IDE. Zero decoration, just raw data. Perfect for:
 - Understanding how the agent works
 - Debugging issues
 - Learning about LLM interactions

@@ -8,6 +8,7 @@ Features
 - Tool: `shell` for executing commands (stdout+stderr)
 - Modes: Approval vs YOLO
 - Ctrl+C handling & session history
+- **Transparent session logging**: All interactions logged as readable markdown files for educational debugging
 
 ## Requirements
 - Python 3.10+
@@ -53,7 +54,36 @@ OPENROUTER_API_KEY=...
   - `/model` — switch models
   - `/approval` — toggle Approval vs YOLO for tool execution
 
+## Session Logging
+
+Every session creates a numbered directory (`session_001/`, `session_002/`, etc.) containing transparent logs of all interactions:
+
+- **User inputs**: Captured exactly as entered
+- **LLM calls**: Full requests (prompt, history, system prompt) and responses (all messages, text output)
+- **Tool executions**: Commands and their output/errors
+
+Each interaction is stored in chronologically numbered subdirectories:
+```
+session_001/
+├── 001-user/
+│   └── 001-request.md
+├── 002-llm/
+│   ├── 002-request.md
+│   └── 003-response.md
+├── 003-tool/
+│   ├── 003-request.md
+│   └── 004-response.md
+└── ...
+```
+
+All logs are formatted as readable markdown with raw data in code blocks. Perfect for:
+- Understanding how the agent works
+- Debugging issues
+- Learning about LLM interactions
+- Analyzing conversation flows
+
 ## Notes
 - The `shell` tool executes via `/bin/bash -lc` to support pipes and redirection.
 - All model text messages are displayed; tool calls and outputs are boxed and color-coded.
+- Session logs are automatically created in the project root and can be safely deleted or ignored.
 

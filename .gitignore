@@ -119,3 +119,7 @@ uv.lock
 
 # Temporary directory
 tmp/
+
+# Session logs (transparent debugging)
+session_*/
+.last_session

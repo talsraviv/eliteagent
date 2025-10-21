@@ -36,3 +36,47 @@
 
 
 ---
+
+## Architecture Notes
+
+### Transparent Session Logging (Added: 2025-10-21)
+
+**Purpose**: Educational transparency - make the agent a "glass box" where every interaction is visible and inspectable.
+
+**Implementation**:
+- `eliteagent/logger.py`: Core `SessionLogger` class that manages session directories and log files
+- Session numbering: Auto-increments via `.last_session` file (session_001, session_002, etc.)
+- Interaction numbering: Chronological sequence within each session (001-user, 002-llm, 003-tool, etc.)
+- File structure: Each interaction gets a directory with numbered request/response markdown files
+
+**Integration points**:
+1. `cli.py`: 
+   - SessionLogger created at startup
+   - User inputs logged immediately after receiving
+   - LLM requests/responses logged around `agent.run_sync()` calls
+   - Logger passed through `Deps` to tools
+
+2. `tools.py`:
+   - `Deps` dataclass extended with optional `logger` field
+   - `shell()` tool logs both approved and denied executions
+   - Tool request logged before execution, response logged after
+
+**Log format**:
+- Readable markdown with clear headers and sections
+- Raw data preserved in code blocks (JSON for structured data, bash for commands, plain text for output)
+- Timestamps for every interaction
+- Metadata includes: model names, approval status, interaction numbers
+
+**Design decisions**:
+- Synchronous file writes (simplicity over performance)
+- No compression or archiving (keep it simple and accessible)
+- Graceful error handling (partial logs are acceptable)
+- Session directories excluded from git via `.gitignore`
+
+**Usage**:
+- Developers can inspect `session_NNN/` directories to understand agent behavior
+- Each numbered subdirectory shows interaction type (user/llm/tool)
+- Request/response files are numbered sequentially for easy chronological reading
+- Perfect for debugging, learning, and auditing agent decisions
+
+---

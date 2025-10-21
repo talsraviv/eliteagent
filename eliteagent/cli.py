@@ -28,6 +28,7 @@ from pydantic_ai.messages import ModelMessage
 from .models import build_model, ModelName, SYSTEM_PROMPT
 from .tools import Deps, shell, ApprovalDenied
 from .ui import UI
+from .logger import SessionLogger
 
 
 HISTORY_PATH = os.path.expanduser("~/.eliteagent_history")
@@ -143,6 +144,10 @@ def main() -> None:
 
     # UI
     ui = UI.make()
+    
+    # Initialize session logger for transparent debugging
+    logger = SessionLogger.create_new_session()
+    ui.info(f"[info]Session logging to: {logger.session_dir}")
 
     # Choose a sensible default model if the current one lacks an API key
     def _auto_pick_model() -> ModelName:
@@ -192,6 +197,9 @@ def main() -> None:
             else:
                 text = res
 
+        # Log user input
+        logger.log_user_input(text)
+        
         # Show user box
         ui.user_box(text)
 
@@ -234,7 +242,17 @@ def main() -> None:
                     approve=approve,
                     ui=ui,
                     timeout=None,
+                    logger=logger,
                 )
+                
+                # Log LLM request
+                llm_interaction_num = logger.log_llm_request(
+                    prompt=text,
+                    model_name=state.model_name,
+                    message_history=state.history,
+                    system_prompt=SYSTEM_PROMPT,
+                )
+                
                 result = agent.run_sync(text, message_history=state.history, deps=deps)
         except KeyboardInterrupt:
             # Abort generation and return to idle
@@ -257,6 +275,13 @@ def main() -> None:
                         model_texts.append(p.content)
         if model_texts:
             ui.model_box("\n\n".join(model_texts))
+        
+        # Log LLM response
+        logger.log_llm_response(
+            interaction_num=llm_interaction_num,
+            messages=messages,
+            text_parts=model_texts,
+        )
 
         # Tools were executed automatically by pydantic-ai; nothing to intercept here.
         # Maintain full history for session continuity by appending new messages

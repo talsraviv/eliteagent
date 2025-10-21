@@ -27,6 +27,13 @@ class SessionLogger:
     
     session_dir: Path
     interaction_counter: int = 0
+    turn_number: int = 0
+    all_turns: list = None
+    
+    def __post_init__(self):
+        """Initialize the turns list."""
+        if self.all_turns is None:
+            self.all_turns = []
     
     @classmethod
     def create_new_session(cls, base_dir: Path | str = ".") -> SessionLogger:
@@ -81,18 +88,26 @@ class SessionLogger:
         self._write_file(interaction_dir, f"{num:03d}-request.txt", user_input)
     
     def _create_validation_file(self, messages: list[Any]) -> None:
-        """Create a source-of-truth validation file showing the raw message structure.
+        """Create a cumulative source-of-truth validation file.
         
-        This file can be used to verify that our logs accurately represent
-        what pydantic-ai actually returned.
+        Tracks all turns in the session, not just the current one.
         """
-        validation = {
+        # Increment turn number
+        self.turn_number += 1
+        
+        # Track the starting interaction for this turn
+        turn_start_interaction = self.interaction_counter + 1
+        
+        # Build validation for this turn
+        turn_validation = {
+            "turn_number": self.turn_number,
+            "start_interaction": turn_start_interaction,
             "total_messages": len(messages),
             "message_sequence": [],
             "expected_log_files": []
         }
         
-        interaction_num = 1  # Start after user input
+        interaction_num = self.interaction_counter  # Current counter position
         
         for i, msg in enumerate(messages):
             msg_type = type(msg).__name__
@@ -123,14 +138,14 @@ class SessionLogger:
                     
                     msg_info["parts"].append(part_info)
             
-            validation["message_sequence"].append(msg_info)
+            turn_validation["message_sequence"].append(msg_info)
             
             # Track expected log files
             if msg_type == 'ModelRequest':
                 # Check if next message is a response
                 if i + 1 < len(messages) and type(messages[i + 1]).__name__ == 'ModelResponse':
                     interaction_num += 1
-                    validation["expected_log_files"].append({
+                    turn_validation["expected_log_files"].append({
                         "interaction": f"{interaction_num:03d}-llm",
                         "files": [
                             f"{interaction_num:03d}-request.json",
@@ -144,7 +159,7 @@ class SessionLogger:
                         for part in next_msg.parts:
                             if type(part).__name__ == 'ToolCallPart':
                                 interaction_num += 1
-                                validation["expected_log_files"].append({
+                                turn_validation["expected_log_files"].append({
                                     "interaction": f"{interaction_num:03d}-tool",
                                     "files": [
                                         f"{interaction_num:03d}-request.txt",
@@ -153,38 +168,62 @@ class SessionLogger:
                                 })
                                 break
         
-        # Write validation file
-        validation_content = json.dumps(validation, indent=2, ensure_ascii=False)
+        # Add end interaction for this turn
+        turn_validation["end_interaction"] = interaction_num
+        
+        # Add this turn to the session's turn list
+        self.all_turns.append(turn_validation)
+        
+        # Write cumulative validation file
+        session_validation = {
+            "session_directory": str(self.session_dir.name),
+            "total_turns": len(self.all_turns),
+            "total_interactions": self.interaction_counter,
+            "turns": self.all_turns
+        }
+        
+        validation_content = json.dumps(session_validation, indent=2, ensure_ascii=False)
         validation_file = self.session_dir / "VALIDATION.json"
         validation_file.write_text(validation_content)
         
-        # Also create a human-readable summary
+        # Create cumulative human-readable summary
         summary_lines = [
             "# Session Validation - Source of Truth",
             "",
-            f"## Message Flow (Total: {len(messages)} messages)",
-            ""
+            f"## Session Overview",
+            f"- Total Turns: {len(self.all_turns)}",
+            f"- Total Interactions: {interaction_num}",
+            "",
         ]
         
-        for msg_info in validation["message_sequence"]:
-            summary_lines.append(f"{msg_info['index']}. {msg_info['type']}")
-            for part in msg_info['parts']:
-                summary_lines.append(f"   - {part['type']}")
-                if 'content_preview' in part:
-                    summary_lines.append(f"     Preview: {part['content_preview']}")
-                if 'tool_name' in part:
-                    summary_lines.append(f"     Tool: {part['tool_name']}")
-        
-        summary_lines.extend([
-            "",
-            "## Expected Log Files",
-            ""
-        ])
-        
-        for expected in validation["expected_log_files"]:
-            summary_lines.append(f"- {expected['interaction']}/")
-            for file in expected['files']:
-                summary_lines.append(f"  - {file}")
+        for turn in self.all_turns:
+            summary_lines.extend([
+                f"## Turn {turn['turn_number']} (Interactions {turn['start_interaction']:03d}-{turn['end_interaction']:03d})",
+                f"Messages: {turn['total_messages']}",
+                ""
+            ])
+            
+            for msg_info in turn["message_sequence"]:
+                summary_lines.append(f"{msg_info['index']}. {msg_info['type']}")
+                for part in msg_info['parts']:
+                    summary_lines.append(f"   - {part['type']}")
+                    if 'content_preview' in part:
+                        summary_lines.append(f"     Preview: {part['content_preview']}")
+                    if 'tool_name' in part:
+                        summary_lines.append(f"     Tool: {part['tool_name']}")
+            
+            summary_lines.extend([
+                "",
+                "### Expected Log Files",
+                ""
+            ])
+            
+            for expected in turn["expected_log_files"]:
+                summary_lines.append(f"- {expected['interaction']}/")
+                for file in expected['files']:
+                    summary_lines.append(f"  - {file}")
+            
+            summary_lines.append("")
         
         summary_content = "\n".join(summary_lines)
         summary_file = self.session_dir / "VALIDATION.md"

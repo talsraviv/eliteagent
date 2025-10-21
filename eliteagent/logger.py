@@ -80,6 +80,116 @@ class SessionLogger:
         # Pure raw input, no decoration
         self._write_file(interaction_dir, f"{num:03d}-request.txt", user_input)
     
+    def _create_validation_file(self, messages: list[Any]) -> None:
+        """Create a source-of-truth validation file showing the raw message structure.
+        
+        This file can be used to verify that our logs accurately represent
+        what pydantic-ai actually returned.
+        """
+        validation = {
+            "total_messages": len(messages),
+            "message_sequence": [],
+            "expected_log_files": []
+        }
+        
+        interaction_num = 1  # Start after user input
+        
+        for i, msg in enumerate(messages):
+            msg_type = type(msg).__name__
+            msg_info = {
+                "index": i,
+                "type": msg_type,
+                "parts": []
+            }
+            
+            if hasattr(msg, 'parts'):
+                for part in msg.parts:
+                    part_type = type(part).__name__
+                    part_info = {"type": part_type}
+                    
+                    # Add relevant details
+                    if part_type == 'UserPromptPart' and hasattr(part, 'content'):
+                        part_info["content_preview"] = part.content[:50] + "..." if len(part.content) > 50 else part.content
+                    elif part_type == 'ToolCallPart':
+                        if hasattr(part, 'tool_name'):
+                            part_info["tool_name"] = part.tool_name
+                        if hasattr(part, 'tool_call_id'):
+                            part_info["tool_call_id"] = part.tool_call_id
+                    elif part_type == 'ToolReturnPart':
+                        if hasattr(part, 'tool_call_id'):
+                            part_info["tool_call_id"] = part.tool_call_id
+                    elif part_type == 'TextPart' and hasattr(part, 'content'):
+                        part_info["content_preview"] = part.content[:50] + "..." if len(part.content) > 50 else part.content
+                    
+                    msg_info["parts"].append(part_info)
+            
+            validation["message_sequence"].append(msg_info)
+            
+            # Track expected log files
+            if msg_type == 'ModelRequest':
+                # Check if next message is a response
+                if i + 1 < len(messages) and type(messages[i + 1]).__name__ == 'ModelResponse':
+                    interaction_num += 1
+                    validation["expected_log_files"].append({
+                        "interaction": f"{interaction_num:03d}-llm",
+                        "files": [
+                            f"{interaction_num:03d}-request.json",
+                            f"{interaction_num + 1:03d}-response.json"
+                        ]
+                    })
+                    
+                    # Check if response has tool calls
+                    next_msg = messages[i + 1]
+                    if hasattr(next_msg, 'parts'):
+                        for part in next_msg.parts:
+                            if type(part).__name__ == 'ToolCallPart':
+                                interaction_num += 1
+                                validation["expected_log_files"].append({
+                                    "interaction": f"{interaction_num:03d}-tool",
+                                    "files": [
+                                        f"{interaction_num:03d}-request.txt",
+                                        f"{interaction_num + 1:03d}-response.txt"
+                                    ]
+                                })
+                                break
+        
+        # Write validation file
+        validation_content = json.dumps(validation, indent=2, ensure_ascii=False)
+        validation_file = self.session_dir / "VALIDATION.json"
+        validation_file.write_text(validation_content)
+        
+        # Also create a human-readable summary
+        summary_lines = [
+            "# Session Validation - Source of Truth",
+            "",
+            f"## Message Flow (Total: {len(messages)} messages)",
+            ""
+        ]
+        
+        for msg_info in validation["message_sequence"]:
+            summary_lines.append(f"{msg_info['index']}. {msg_info['type']}")
+            for part in msg_info['parts']:
+                summary_lines.append(f"   - {part['type']}")
+                if 'content_preview' in part:
+                    summary_lines.append(f"     Preview: {part['content_preview']}")
+                if 'tool_name' in part:
+                    summary_lines.append(f"     Tool: {part['tool_name']}")
+        
+        summary_lines.extend([
+            "",
+            "## Expected Log Files",
+            ""
+        ])
+        
+        for expected in validation["expected_log_files"]:
+            summary_lines.append(f"- {expected['interaction']}/")
+            for file in expected['files']:
+                summary_lines.append(f"  - {file}")
+        
+        summary_content = "\n".join(summary_lines)
+        summary_file = self.session_dir / "VALIDATION.md"
+        summary_file.write_text(summary_content)
+    
     def log_conversation_turn(
         self,
         messages: list[Any],
@@ -91,6 +201,9 @@ class SessionLogger:
         Builds the FULL conversation context for each LLM call, exactly as
         it's sent to the API. Handles pydantic-ai ModelRequest/ModelResponse objects.
         """
+        # Create source of truth validation file
+        self._create_validation_file(messages)
+        
         # Process messages and log each request/response pair
         i = 0
         conversation_history = []

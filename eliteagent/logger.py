@@ -80,6 +80,144 @@ class SessionLogger:
         # Pure raw input, no decoration
         self._write_file(interaction_dir, f"{num:03d}-request.txt", user_input)
     
+    def log_conversation_turn(
+        self,
+        messages: list[Any],
+        model_name: str,
+        system_prompt: str,
+    ) -> None:
+        """Log all LLM request/response pairs from a conversation turn.
+        
+        Parses through the message history and logs each LLM call separately,
+        including the initial user prompt and subsequent tool use rounds.
+        """
+        # Build the conversation by grouping request/response pairs
+        i = 0
+        request_messages = []
+        
+        while i < len(messages):
+            msg = messages[i]
+            
+            if not hasattr(msg, 'model_dump'):
+                i += 1
+                continue
+                
+            msg_dict = msg.model_dump()
+            kind = msg_dict.get('kind')
+            
+            if kind == 'request':
+                # Start building a request
+                parts = msg_dict.get('parts', [])
+                
+                # Check if this is the initial request with system prompt
+                has_system = any(p.get('part_kind') == 'system-prompt' for p in parts)
+                
+                # Build messages array for this request
+                current_request = []
+                
+                if has_system:
+                    # Add system prompt
+                    current_request.append({
+                        "role": "system",
+                        "content": system_prompt
+                    })
+                
+                # Add all request parts
+                for part in parts:
+                    part_kind = part.get('part_kind')
+                    if part_kind == 'user-prompt':
+                        current_request.append({
+                            "role": "user",
+                            "content": part.get('content', '')
+                        })
+                    elif part_kind == 'tool-return':
+                        current_request.append({
+                            "role": "tool",
+                            "tool_call_id": part.get('tool_call_id'),
+                            "content": part.get('content', '')
+                        })
+                
+                # Look ahead for the response
+                if i + 1 < len(messages):
+                    next_msg = messages[i + 1]
+                    if hasattr(next_msg, 'model_dump'):
+                        next_dict = next_msg.model_dump()
+                        if next_dict.get('kind') == 'response':
+                            # Log this request/response pair
+                            self._log_llm_pair(
+                                request_messages=current_request,
+                                response_dict=next_dict,
+                                model_name=model_name
+                            )
+                            i += 2  # Skip both request and response
+                            continue
+                
+                i += 1
+            else:
+                i += 1
+    
+    def _log_llm_pair(
+        self,
+        request_messages: list[dict],
+        response_dict: dict,
+        model_name: str
+    ) -> None:
+        """Log a single LLM request/response pair."""
+        # Log request
+        num, interaction_dir = self._next_interaction("llm")
+        
+        request_payload = {
+            "model": model_name,
+            "messages": request_messages
+        }
+        
+        json_content = json.dumps(request_payload, indent=2, ensure_ascii=False)
+        self._write_file(interaction_dir, f"{num:03d}-request.json", json_content)
+        
+        # Log response
+        content_parts = []
+        tool_calls = []
+        
+        for part in response_dict.get('parts', []):
+            part_kind = part.get('part_kind')
+            if part_kind == 'text':
+                content_parts.append(part.get('content', ''))
+            elif part_kind == 'tool-call':
+                tool_calls.append({
+                    "id": part.get('tool_call_id'),
+                    "type": "function",
+                    "function": {
+                        "name": part.get('tool_name'),
+                        "arguments": part.get('args', {})
+                    }
+                })
+        
+        message = {"role": "assistant"}
+        if content_parts:
+            message["content"] = "\n".join(content_parts)
+        if tool_calls:
+            message["tool_calls"] = tool_calls
+        
+        choice = {
+            "index": 0,
+            "message": message,
+            "finish_reason": response_dict.get('finish_reason', 'stop')
+        }
+        
+        response_payload = {
+            "choices": [choice],
+            "model": model_name
+        }
+        
+        # Add usage if available
+        usage = response_dict.get('usage')
+        if usage:
+            response_payload["usage"] = usage
+        
+        json_content = json.dumps(response_payload, indent=2, ensure_ascii=False, default=str)
+        response_num = num + 1
+        self._write_file(interaction_dir, f"{response_num:03d}-response.json", json_content)
+    
     def log_llm_request(
         self,
         prompt: str,

@@ -245,14 +245,6 @@ def main() -> None:
                     logger=logger,
                 )
                 
-                # Log LLM request
-                llm_interaction_num = logger.log_llm_request(
-                    prompt=text,
-                    model_name=state.model_name,
-                    message_history=state.history,
-                    system_prompt=SYSTEM_PROMPT,
-                )
-                
                 result = agent.run_sync(text, message_history=state.history, deps=deps)
         except KeyboardInterrupt:
             # Abort generation and return to idle
@@ -263,25 +255,26 @@ def main() -> None:
             state.history = result.all_messages() if 'result' in locals() else state.history
             continue
 
-        # Display model messages and detect tool calls for shell
+        # Get all messages from this run
         messages = result.all_messages()
-        # Show all text parts
+        
+        # Log each LLM request/response pair by parsing the message history
+        # Messages come in pairs: request (with user/tool parts) followed by response
+        logger.log_conversation_turn(
+            messages=messages,
+            model_name=state.model_name,
+            system_prompt=SYSTEM_PROMPT,
+        )
+        
+        # Display model text parts to user
         model_texts: list[str] = []
         for m in messages:
-            # Print only model text parts
             if getattr(m, "kind", None) == "response":
                 for p in m.parts:
                     if getattr(p, "part_kind", None) == "text" and p.content:
                         model_texts.append(p.content)
         if model_texts:
             ui.model_box("\n\n".join(model_texts))
-        
-        # Log LLM response
-        logger.log_llm_response(
-            interaction_num=llm_interaction_num,
-            messages=messages,
-            text_parts=model_texts,
-        )
 
         # Tools were executed automatically by pydantic-ai; nothing to intercept here.
         # Maintain full history for session continuity by appending new messages

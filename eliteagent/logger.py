@@ -21,8 +21,8 @@ class SessionLogger:
     - 001-user/, 002-llm/, 003-tool/, etc.
     
     Each interaction directory contains:
-    - NNN-request.md (the input/request)
-    - NNN-response.md (the output/response, if applicable)
+    - NNN-request.txt/json (the input/request)
+    - NNN-response.txt/json (the output/response, if applicable)
     """
     
     session_dir: Path
@@ -89,7 +89,7 @@ class SessionLogger:
         """Log all LLM request/response pairs from a conversation turn.
         
         Builds the FULL conversation context for each LLM call, exactly as
-        it's sent to the API. This includes the complete message history.
+        it's sent to the API. Handles pydantic-ai ModelRequest/ModelResponse objects.
         """
         # Process messages and log each request/response pair
         i = 0
@@ -97,20 +97,14 @@ class SessionLogger:
         
         while i < len(messages):
             msg = messages[i]
+            msg_type = type(msg).__name__
             
-            if not hasattr(msg, 'model_dump'):
-                i += 1
-                continue
-                
-            msg_dict = msg.model_dump()
-            kind = msg_dict.get('kind')
-            
-            if kind == 'request':
-                # Build the full request with conversation history
-                parts = msg_dict.get('parts', [])
+            if msg_type == 'ModelRequest':
+                # Extract request data from pydantic-ai object
+                parts = msg.parts if hasattr(msg, 'parts') else []
                 
                 # Check if this includes system prompt (first request)
-                has_system = any(p.get('part_kind') == 'system-prompt' for p in parts)
+                has_system = any(type(p).__name__ == 'SystemPromptPart' for p in parts)
                 
                 # Build the complete messages array for this API call
                 current_request = []
@@ -129,65 +123,38 @@ class SessionLogger:
                 
                 # Add the new parts from this request
                 for part in parts:
-                    part_kind = part.get('part_kind')
-                    if part_kind == 'user-prompt':
+                    part_type = type(part).__name__
+                    if part_type == 'UserPromptPart':
                         msg_obj = {
                             "role": "user",
-                            "content": part.get('content', '')
+                            "content": part.content if hasattr(part, 'content') else ''
                         }
                         current_request.append(msg_obj)
                         # Add to history for next round (only on first request)
                         if has_system:
                             conversation_history.append(msg_obj)
-                    elif part_kind == 'tool-return':
+                    elif part_type == 'ToolReturnPart':
                         # Tool returns come after we've already added assistant message
                         current_request.append({
                             "role": "tool",
-                            "tool_call_id": part.get('tool_call_id'),
-                            "content": part.get('content', '')
+                            "tool_call_id": part.tool_call_id if hasattr(part, 'tool_call_id') else '',
+                            "content": part.content if hasattr(part, 'content') else ''
                         })
                 
                 # Look ahead for the response
                 if i + 1 < len(messages):
                     next_msg = messages[i + 1]
-                    if hasattr(next_msg, 'model_dump'):
-                        next_dict = next_msg.model_dump()
-                        if next_dict.get('kind') == 'response':
-                            # Log this request/response pair
-                            self._log_llm_pair(
-                                request_messages=current_request,
-                                response_dict=next_dict,
-                                model_name=model_name
-                            )
-                            
-                            # Add the assistant response to conversation history
-                            content_parts = []
-                            tool_calls = []
-                            
-                            for part in next_dict.get('parts', []):
-                                part_kind = part.get('part_kind')
-                                if part_kind == 'text':
-                                    content_parts.append(part.get('content', ''))
-                                elif part_kind == 'tool-call':
-                                    tool_calls.append({
-                                        "id": part.get('tool_call_id'),
-                                        "type": "function",
-                                        "function": {
-                                            "name": part.get('tool_name'),
-                                            "arguments": part.get('args', {})
-                                        }
-                                    })
-                            
-                            assistant_msg = {"role": "assistant"}
-                            if content_parts:
-                                assistant_msg["content"] = "\n".join(content_parts)
-                            if tool_calls:
-                                assistant_msg["tool_calls"] = tool_calls
-                            
-                            conversation_history.append(assistant_msg)
-                            
-                            i += 2  # Skip both request and response
-                            continue
+                    if type(next_msg).__name__ == 'ModelResponse':
+                        # Log this request/response pair
+                        self._log_llm_pair(
+                            request_messages=current_request,
+                            response_obj=next_msg,
+                            model_name=model_name,
+                            conversation_history=conversation_history
+                        )
+                        
+                        i += 2  # Skip both request and response
+                        continue
                 
                 i += 1
             else:
@@ -196,10 +163,11 @@ class SessionLogger:
     def _log_llm_pair(
         self,
         request_messages: list[dict],
-        response_dict: dict,
-        model_name: str
+        response_obj: Any,
+        model_name: str,
+        conversation_history: list[dict]
     ) -> None:
-        """Log a single LLM request/response pair."""
+        """Log a single LLM request/response pair from pydantic-ai objects."""
         # Log request
         num, interaction_dir = self._next_interaction("llm")
         
@@ -211,23 +179,35 @@ class SessionLogger:
         json_content = json.dumps(request_payload, indent=2, ensure_ascii=False)
         self._write_file(interaction_dir, f"{num:03d}-request.json", json_content)
         
-        # Log response
+        # Log response - extract from pydantic-ai ModelResponse object
+        parts = response_obj.parts if hasattr(response_obj, 'parts') else []
         content_parts = []
         tool_calls = []
         
-        for part in response_dict.get('parts', []):
-            part_kind = part.get('part_kind')
-            if part_kind == 'text':
-                content_parts.append(part.get('content', ''))
-            elif part_kind == 'tool-call':
-                tool_calls.append({
-                    "id": part.get('tool_call_id'),
+        for part in parts:
+            part_type = type(part).__name__
+            if part_type == 'TextPart':
+                if hasattr(part, 'content'):
+                    content_parts.append(part.content)
+            elif part_type == 'ToolCallPart':
+                tool_call = {
+                    "id": part.tool_call_id if hasattr(part, 'tool_call_id') else '',
                     "type": "function",
                     "function": {
-                        "name": part.get('tool_name'),
-                        "arguments": part.get('args', {})
+                        "name": part.tool_name if hasattr(part, 'tool_name') else '',
+                        "arguments": {}
                     }
-                })
+                }
+                # Parse args if it's JSON string
+                if hasattr(part, 'args'):
+                    if isinstance(part.args, str):
+                        try:
+                            tool_call["function"]["arguments"] = json.loads(part.args)
+                        except:
+                            tool_call["function"]["arguments"] = {"raw": part.args}
+                    else:
+                        tool_call["function"]["arguments"] = part.args
+                tool_calls.append(tool_call)
         
         message = {"role": "assistant"}
         if content_parts:
@@ -238,7 +218,7 @@ class SessionLogger:
         choice = {
             "index": 0,
             "message": message,
-            "finish_reason": response_dict.get('finish_reason', 'stop')
+            "finish_reason": response_obj.finish_reason if hasattr(response_obj, 'finish_reason') else 'stop'
         }
         
         response_payload = {
@@ -247,174 +227,21 @@ class SessionLogger:
         }
         
         # Add usage if available
-        usage = response_dict.get('usage')
-        if usage:
-            response_payload["usage"] = usage
+        if hasattr(response_obj, 'usage'):
+            usage_obj = response_obj.usage
+            if hasattr(usage_obj, 'input_tokens'):
+                response_payload["usage"] = {
+                    "input_tokens": usage_obj.input_tokens,
+                    "output_tokens": usage_obj.output_tokens,
+                    "total_tokens": usage_obj.total_tokens if hasattr(usage_obj, 'total_tokens') else usage_obj.input_tokens + usage_obj.output_tokens
+                }
         
         json_content = json.dumps(response_payload, indent=2, ensure_ascii=False, default=str)
         response_num = num + 1
         self._write_file(interaction_dir, f"{response_num:03d}-response.json", json_content)
-    
-    def log_llm_request(
-        self,
-        prompt: str,
-        model_name: str,
-        message_history: list[Any] | None,
-        system_prompt: str,
-    ) -> int:
-        """Log LLM request as OpenAI-style JSON.
         
-        Returns:
-            interaction_num to use when logging the response
-        """
-        num, interaction_dir = self._next_interaction("llm")
-        
-        # Build OpenAI-style messages array
-        messages = []
-        
-        # Add system prompt
-        messages.append({
-            "role": "system",
-            "content": system_prompt
-        })
-        
-        # Add message history if present
-        if message_history:
-            for msg in message_history:
-                # Convert pydantic message to dict
-                if hasattr(msg, 'model_dump'):
-                    msg_dict = msg.model_dump()
-                    # Extract role and content from pydantic-ai format
-                    kind = msg_dict.get('kind')
-                    if kind == 'request':
-                        # User message
-                        for part in msg_dict.get('parts', []):
-                            if part.get('part_kind') == 'user-prompt':
-                                messages.append({
-                                    "role": "user",
-                                    "content": part.get('content', '')
-                                })
-                    elif kind == 'response':
-                        # Assistant message
-                        content_parts = []
-                        tool_calls = []
-                        for part in msg_dict.get('parts', []):
-                            part_kind = part.get('part_kind')
-                            if part_kind == 'text':
-                                content_parts.append(part.get('content', ''))
-                            elif part_kind == 'tool-call':
-                                tool_calls.append({
-                                    "id": part.get('tool_call_id'),
-                                    "type": "function",
-                                    "function": {
-                                        "name": part.get('tool_name'),
-                                        "arguments": part.get('args', {})
-                                    }
-                                })
-                        
-                        assistant_msg = {"role": "assistant"}
-                        if content_parts:
-                            assistant_msg["content"] = "\n".join(content_parts)
-                        if tool_calls:
-                            assistant_msg["tool_calls"] = tool_calls
-                        messages.append(assistant_msg)
-        
-        # Add current user prompt
-        messages.append({
-            "role": "user",
-            "content": prompt
-        })
-        
-        # Create request payload
-        request_payload = {
-            "model": model_name,
-            "messages": messages
-        }
-        
-        # Write as pure JSON
-        json_content = json.dumps(request_payload, indent=2, ensure_ascii=False)
-        self._write_file(interaction_dir, f"{num:03d}-request.json", json_content)
-        return num
-    
-    def log_llm_response(
-        self,
-        interaction_num: int,
-        messages: list[Any],
-        text_parts: list[str],
-    ) -> None:
-        """Log LLM response as OpenAI-style JSON."""
-        interaction_dir = self.session_dir / f"{interaction_num:03d}-llm"
-        
-        # Build OpenAI-style response
-        choices = []
-        
-        # Find the last response message
-        for msg in messages:
-            if hasattr(msg, 'model_dump'):
-                msg_dict = msg.model_dump()
-                if msg_dict.get('kind') == 'response':
-                    # Extract message content
-                    content_parts = []
-                    tool_calls = []
-                    
-                    for part in msg_dict.get('parts', []):
-                        part_kind = part.get('part_kind')
-                        if part_kind == 'text':
-                            content_parts.append(part.get('content', ''))
-                        elif part_kind == 'tool-call':
-                            tool_calls.append({
-                                "id": part.get('tool_call_id'),
-                                "type": "function",
-                                "function": {
-                                    "name": part.get('tool_name'),
-                                    "arguments": part.get('args', {})
-                                }
-                            })
-                    
-                    message = {"role": "assistant"}
-                    if content_parts:
-                        message["content"] = "\n".join(content_parts)
-                    if tool_calls:
-                        message["tool_calls"] = tool_calls
-                    
-                    choices.append({
-                        "index": 0,
-                        "message": message,
-                        "finish_reason": msg_dict.get('finish_reason', 'stop')
-                    })
-                    
-                    # Also extract usage if available
-                    usage = msg_dict.get('usage')
-                    if usage:
-                        response_payload = {
-                            "choices": choices,
-                            "usage": usage,
-                            "model": msg_dict.get('model_name', 'unknown')
-                        }
-                    else:
-                        response_payload = {
-                            "choices": choices,
-                            "model": msg_dict.get('model_name', 'unknown')
-                        }
-                    
-                    # Write as pure JSON
-                    json_content = json.dumps(response_payload, indent=2, ensure_ascii=False, default=str)
-                    response_num = interaction_num + 1
-                    self._write_file(interaction_dir, f"{response_num:03d}-response.json", json_content)
-                    return
-        
-        # Fallback: if we couldn't parse, write what we have
-        fallback = {
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "content": "\n".join(text_parts) if text_parts else ""
-                }
-            }]
-        }
-        json_content = json.dumps(fallback, indent=2, ensure_ascii=False)
-        response_num = interaction_num + 1
-        self._write_file(interaction_dir, f"{response_num:03d}-response.json", json_content)
+        # Add the assistant response to conversation history
+        conversation_history.append(message)
     
     def log_tool_request(
         self,
@@ -456,4 +283,3 @@ class SessionLogger:
         
         response_num = interaction_num + 1
         self._write_file(interaction_dir, f"{response_num:03d}-response.txt", content)
-

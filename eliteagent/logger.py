@@ -145,13 +145,52 @@ class SessionLogger:
                 if i + 1 < len(messages):
                     next_msg = messages[i + 1]
                     if type(next_msg).__name__ == 'ModelResponse':
-                        # Log this request/response pair
+                        # Log this LLM request/response pair
                         self._log_llm_pair(
                             request_messages=current_request,
                             response_obj=next_msg,
                             model_name=model_name,
                             conversation_history=conversation_history
                         )
+                        
+                        # Check if response has tool calls - if so, log the tool execution
+                        response_parts = next_msg.parts if hasattr(next_msg, 'parts') else []
+                        for part in response_parts:
+                            if type(part).__name__ == 'ToolCallPart':
+                                # This is a tool call - extract the command
+                                tool_name = part.tool_name if hasattr(part, 'tool_name') else ''
+                                tool_call_id = part.tool_call_id if hasattr(part, 'tool_call_id') else ''
+                                
+                                # Get the command from args
+                                command = ''
+                                if hasattr(part, 'args'):
+                                    if isinstance(part.args, str):
+                                        try:
+                                            args_dict = json.loads(part.args)
+                                            command = args_dict.get('command', '')
+                                        except:
+                                            command = part.args
+                                    elif isinstance(part.args, dict):
+                                        command = part.args.get('command', '')
+                                
+                                # Look ahead for the tool return in the next request
+                                tool_output = ''
+                                if i + 2 < len(messages):
+                                    tool_return_msg = messages[i + 2]
+                                    if type(tool_return_msg).__name__ == 'ModelRequest':
+                                        return_parts = tool_return_msg.parts if hasattr(tool_return_msg, 'parts') else []
+                                        for return_part in return_parts:
+                                            if type(return_part).__name__ == 'ToolReturnPart':
+                                                if hasattr(return_part, 'tool_call_id') and return_part.tool_call_id == tool_call_id:
+                                                    tool_output = return_part.content if hasattr(return_part, 'content') else ''
+                                                    break
+                                
+                                # Log the tool execution
+                                self._log_tool_execution(
+                                    tool_name=tool_name,
+                                    command=command,
+                                    output=tool_output
+                                )
                         
                         i += 2  # Skip both request and response
                         continue
@@ -242,6 +281,21 @@ class SessionLogger:
         
         # Add the assistant response to conversation history
         conversation_history.append(message)
+    
+    def _log_tool_execution(
+        self,
+        tool_name: str,
+        command: str,
+        output: str
+    ) -> None:
+        """Log a tool execution (request + response) from message history."""
+        # Log tool request
+        num, interaction_dir = self._next_interaction("tool")
+        self._write_file(interaction_dir, f"{num:03d}-request.txt", command)
+        
+        # Log tool response
+        response_num = num + 1
+        self._write_file(interaction_dir, f"{response_num:03d}-response.txt", output if output else "<no output>")
     
     def log_tool_request(
         self,

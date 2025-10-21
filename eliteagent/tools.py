@@ -74,45 +74,14 @@ def shell(ctx: RunContext[Deps], command: str) -> str:
     ctx.deps.ui.tool_call_box(f"shell(command={command!r})")
 
     # Approval gating when enabled
-    allowed = True
     if ctx.deps.approval_mode:
         allowed = ctx.deps.approve("shell", {"command": command})
         if not allowed:
             ctx.deps.ui.error("Denied. Tool call cancelled.")
-            # Log the denied tool call
-            if ctx.deps.logger:
-                interaction_num = ctx.deps.logger.log_tool_request(
-                    tool_name="shell",
-                    args={"command": command},
-                    approval_mode=ctx.deps.approval_mode,
-                    approved=False,
-                )
-                ctx.deps.logger.log_tool_response(
-                    interaction_num=interaction_num,
-                    output="",
-                    error="User denied tool call",
-                )
             raise ApprovalDenied("User denied shell tool call")
-    
-    # Log tool request
-    interaction_num = None
-    if ctx.deps.logger:
-        interaction_num = ctx.deps.logger.log_tool_request(
-            tool_name="shell",
-            args={"command": command},
-            approval_mode=ctx.deps.approval_mode,
-            approved=allowed,
-        )
 
     # Execute and show output
     output = run_shell_command(command, timeout=ctx.deps.timeout)
     ctx.deps.ui.tool_output_box(output if output else "<no output>")
-    
-    # Log tool response
-    if ctx.deps.logger and interaction_num is not None:
-        ctx.deps.logger.log_tool_response(
-            interaction_num=interaction_num,
-            output=output if output else "<no output>",
-        )
     
     return output
